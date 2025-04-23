@@ -1,6 +1,7 @@
 # Sensitive files
-set-env.sh
 .env
+.env.*
+*.encrypted
 
 # Terraform
 .terraform/
@@ -8,11 +9,46 @@ set-env.sh
 *.tfstate.*
 *.tfvars.backup
 .terraform.lock.hcl
+*.tfplan
+*.tfvars.*
+backend.tf.*
+
+# Java
+target/
+*.class
+*.jar
+*.war
+*.ear
+*.original
 
 # Backup files
 *.bak
 *~
 *.swp
+*.backup
+*.[0-9][0-9][0-9][0-9]*
 
-# Text
+# IDE files
+.idea/
+*.iml
+.vscode/
+*.code-workspace
+
+# Text and docs
 *.txt
+README.md
+.qodo/ 
+old/       # This will ignore the entire 'old' directory
+
+# Temporary files
+*.log
+*.tmp
+
+# Build and script backups
+*.sh.[0-9]*
+build/
+dist/
+
+# Kubernetes backups
+k8s/backups/
+old/
