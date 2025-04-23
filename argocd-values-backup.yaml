@@ -1,0 +1,28 @@
+USER-SUPPLIED VALUES:
+applicationSet:
+  enabled: true
+  metrics:
+    enabled: true
+    serviceMonitor:
+      enabled: true
+controller:
+  metrics:
+    enabled: true
+    serviceMonitor:
+      enabled: true
+repoServer:
+  metrics:
+    enabled: true
+    serviceMonitor:
+      enabled: true
+server:
+  extraArgs:
+  - --insecure
+  ingress:
+    enabled: false
+  metrics:
+    enabled: true
+    serviceMonitor:
+      enabled: true
+  service:
+    type: ClusterIP

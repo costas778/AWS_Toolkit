@@ -1,0 +1,28 @@
+# global:
+#   image:
+#     tag: v2.14.7
+
+server:
+  extraArgs:
+    - --insecure  
+  service:
+    type: ClusterIP
+  ingress:
+    enabled: false    # Disable ingress in Helm chart
+  metrics:
+    enabled: true
+    serviceMonitor:
+      enabled: true
+  config:
+    timeout.reconciliation: 180s
+    timeout.connection: 60s    
+  
+controller:
+  metrics:
+    enabled: true
+    serviceMonitor:
+      enabled: true
+
+configs:
+  params:
+    server.insecure: true

@@ -1,0 +1,36 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: freqtrade-ingress-green
+  namespace: freqtrade-prod-green
+  annotations:
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/group.name: "freqtrade-prod"
+    alb.ingress.kubernetes.io/healthcheck-path: /api/v1/ping
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}]'
+    alb.ingress.kubernetes.io/subnets: subnet-0205a48cb185bae19,subnet-0bc878f6ad871f4f9,subnet-0787621bc386612dc
+spec:
+  ingressClassName: alb
+  rules:
+  # Rule 1: Match specific hostname
+  - host: green.freqtrade-prod.abc-trading-prod.42web.io
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: freqtrade
+            port:
+              number: 8080
+  # Rule 2: Default rule for direct ALB access
+  - http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: freqtrade
+            port:
+              number: 8080

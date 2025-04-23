@@ -1,0 +1,226 @@
+#!/bin/bash
+set -e
+
+# Apply Kubernetes manifests
+echo "Creating zipline namespace..."
+kubectl apply -f zipline-namespace.yaml
+
+# Install AWS EBS CSI Driver if not already installed
+echo "Checking if EBS CSI Driver is installed..."
+if ! kubectl get deployment ebs-csi-controller -n kube-system &> /dev/null; then
+  echo "Installing AWS EBS CSI Driver using EKS add-on..."
+  
+  # Create IAM role for EBS CSI Driver
+  eksctl create iamserviceaccount \
+    --name ebs-csi-controller-sa \
+    --namespace kube-system \
+    --cluster abc-trading-dev \
+    --attach-policy-arn arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy \
+    --approve \
+    --role-only \
+    --role-name AmazonEKS_EBS_CSI_DriverRole
+
+  # Install EBS CSI Driver as an EKS add-on
+  eksctl create addon \
+    --name aws-ebs-csi-driver \
+    --cluster abc-trading-dev \
+    --service-account-role-arn arn:aws:iam::905418172268:role/AmazonEKS_EBS_CSI_DriverRole \
+    --force
+  
+  # Wait for the EBS CSI driver to be ready
+  echo "Waiting for EBS CSI Driver to be ready..."
+  sleep 30  # Give some time for the add-on to be installed
+  kubectl -n kube-system rollout status deployment/ebs-csi-controller
+fi
+
+# Tag subnets for ALB Ingress Controller
+echo "Tagging subnets for ALB Ingress Controller..."
+aws ec2 create-tags --resources subnet-0dbac3adc822d205b --tags Key=kubernetes.io/role/elb,Value=1 Key=kubernetes.io/cluster/abc-trading-dev,Value=shared
+aws ec2 create-tags --resources subnet-0c53531141fc8d551 --tags Key=kubernetes.io/role/elb,Value=1 Key=kubernetes.io/cluster/abc-trading-dev,Value=shared
+aws ec2 create-tags --resources subnet-0b3badb14189e89d8 --tags Key=kubernetes.io/role/elb,Value=1 Key=kubernetes.io/cluster/abc-trading-dev,Value=shared
+
+# Create a proper api_server.py file
+echo "Creating api_server.py file..."
+cat > api_server.py << EOF
+from flask import Flask, jsonify, request
+import sys
+import traceback
+import os
+import logging
+
+# Configure logging
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+app = Flask(__name__)
+
+@app.route("/health")
+def health():
+    return jsonify({"status": "healthy"})
+
+@app.route("/")
+def home():
+    try:
+        import zipline
+        version = zipline.__version__
+    except Exception as e:
+        error_msg = str(e)
+        traceback_str = traceback.format_exc()
+        logger.error(f"Error importing zipline: {error_msg}")
+        logger.error(traceback_str)
+        return jsonify({
+            "message": "Zipline API Server",
+            "error": error_msg,
+            "traceback": traceback_str
+        }), 500
+    
+    return jsonify({
+        "message": "Zipline API Server",
+        "version": version
+    })
+
+if __name__ == "__main__":
+    try:
+        logger.info("Starting Zipline API Server...")
+        logger.info(f"ZIPLINE_ROOT: {os.environ.get('ZIPLINE_ROOT', 'Not set')}")
+        logger.info(f"Current directory: {os.getcwd()}")
+        
+        # Try importing zipline to see if it works
+        import zipline
+        logger.info(f"Zipline version: {zipline.__version__}")
+        
+        app.run(host="0.0.0.0", port=8081, debug=True)
+    except Exception as e:
+        logger.error(f"Error starting server: {e}")
+        logger.error(traceback.format_exc())
+        sys.exit(1)
+EOF
+
+# Create Dockerfile for new Zipline image
+echo "Creating Dockerfile..."
+cat > Dockerfile << EOF
+FROM condaforge/mambaforge:latest
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \\
+    build-essential \\
+    git \\
+    && rm -rf /var/lib/apt/lists/*
+
+# Create a conda environment for Zipline with Python 3.6
+RUN mamba create -n zipline python=3.6 -y
+
+# Install specific version of Alembic that doesn't use annotations
+RUN mamba install -n zipline -c conda-forge alembic=1.7.7 -y
+
+# Install Zipline and its dependencies
+RUN mamba install -n zipline -c conda-forge zipline -y
+
+# Install Flask for the API server
+RUN mamba install -n zipline -c conda-forge flask -y
+
+# Create directories
+RUN mkdir -p /zipline/data
+
+# Set environment variable
+ENV ZIPLINE_ROOT=/zipline/data
+
+# Copy API server
+COPY api_server.py /zipline/api_server.py
+
+# Expose port
+EXPOSE 8081
+
+# Set working directory
+WORKDIR /zipline
+
+# Start API server
+CMD ["conda", "run", "-n", "zipline", "python", "/zipline/api_server.py"]
+EOF
+
+# Build and push the image to ECR
+echo "Building and pushing new Zipline image..."
+aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin 905418172268.dkr.ecr.us-east-1.amazonaws.com
+docker build -t 905418172268.dkr.ecr.us-east-1.amazonaws.com/zipline:mamba .
+docker push 905418172268.dkr.ecr.us-east-1.amazonaws.com/zipline:mamba
+
+# Apply remaining Kubernetes manifests
+echo "Applying Kubernetes manifests..."
+kubectl apply -f zipline-configmap.yaml
+kubectl apply -f zipline-pvc.yaml
+
+# Create a deployment with the new image
+cat > zipline-deployment-mamba.yaml << EOF
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: zipline
+  namespace: zipline
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: zipline
+  template:
+    metadata:
+      labels:
+        app: zipline
+    spec:
+      containers:
+      - name: zipline
+        image: 905418172268.dkr.ecr.us-east-1.amazonaws.com/zipline:mamba
+        ports:
+        - containerPort: 8081
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "250m"
+          limits:
+            memory: "1Gi"
+            cpu: "500m"
+        volumeMounts:
+        - name: config-volume
+          mountPath: /zipline/config.json
+          subPath: config.json
+        - name: data-volume
+          mountPath: /zipline/data
+        env:
+        - name: ZIPLINE_ROOT
+          value: "/zipline/data"
+      volumes:
+      - name: config-volume
+        configMap:
+          name: zipline-config
+      - name: data-volume
+        persistentVolumeClaim:
+          claimName: zipline-data
+EOF
+
+kubectl apply -f zipline-deployment-mamba.yaml
+kubectl apply -f zipline-service.yaml
+kubectl apply -f zipline-ingress.yaml
+kubectl apply -f zipline-pdb.yaml
+
+# Wait for deployment to be ready
+echo "Waiting for deployment to be ready..."
+kubectl rollout status deployment/zipline -n zipline
+
+# Get the ALB URL
+echo "Getting ALB URL..."
+sleep 30  # Give some time for the ALB to be provisioned
+ALB_URL=$(kubectl -n zipline get ingress zipline -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+
+if [ -z "$ALB_URL" ]; then
+  echo "ALB URL not available yet. Using port forwarding..."
+  kubectl port-forward -n zipline svc/zipline 8081:80 &
+  PF_PID=$!
+  echo "Zipline is accessible at: http://localhost:8081"
+  echo "Press Ctrl+C to stop port forwarding"
+  trap "kill $PF_PID" EXIT
+  wait $PF_PID
+else
+  echo "Zipline is accessible at: http://${ALB_URL}"
+fi

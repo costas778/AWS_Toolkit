@@ -1,0 +1,130 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: freqtrade-config
+  namespace: freqtrade-prod-green
+data:
+  config.json: |
+    {
+      "max_open_trades": 5,
+      "stake_currency": "USDT",
+      "stake_amount": 20,
+      "tradable_balance_ratio": 0.99,
+      "fiat_display_currency": "USD",
+      "dry_run": true,
+      "strategy": "SimpleStrategy",
+      "cancel_open_orders_on_exit": false,
+      "unfilledtimeout": {
+        "entry": 10,
+        "exit": 10,
+        "exit_timeout_count": 0,
+        "unit": "minutes"
+      },
+      "entry_pricing": {
+        "price_side": "same",
+        "use_order_book": true,
+        "order_book_top": 1,
+        "price_last_balance": 0.0,
+        "check_depth_of_market": {
+          "enabled": false,
+          "bids_to_ask_delta": 1
+        }
+      },
+      "exit_pricing": {
+        "price_side": "same",
+        "use_order_book": true,
+        "order_book_top": 1
+      },
+      "exchange": {
+        "name": "kraken",
+        "key": "",
+        "secret": "",
+        "ccxt_config": {},
+        "ccxt_async_config": {},
+        "pair_whitelist": [
+          "BTC/USDT",
+          "ETH/USDT",
+          "SOL/USDT",
+          "ADA/USDT",
+          "DOGE/USDT"
+        ],
+        "pair_blacklist": []
+      },
+      "bot_name": "freqtrade",
+      "initial_state": "running",
+      "force_entry_enable": false,
+      "internals": {
+        "process_throttle_secs": 5
+      },
+      "pairlists": [
+        {
+          "method": "StaticPairList",
+          "config": {
+            "pairs": ["BTC/USDT", "ETH/USDT", "SOL/USDT", "ADA/USDT", "DOGE/USDT"]
+          }
+        }
+      ],
+      "api_server": {
+        "enabled": true,
+        "listen_ip_address": "0.0.0.0",
+        "listen_port": 8080,
+        "verbosity": "info",
+        "enable_openapi": true,
+        "jwt_secret_key": "somethingrandom",
+        "CORS_origins": ["*"],
+        "username": "admin",
+        "password": "admin"
+      }
+    }
+
+  strategy.py: |
+    from freqtrade.strategy import IStrategy, IntParameter
+    import pandas as pd
+    import talib.abstract as ta
+    import numpy as np
+    from pandas import DataFrame
+    from freqtrade.persistence import Trade
+    from datetime import datetime, timedelta
+    from functools import reduce
+    import talib.abstract as ta
+    
+    class SimpleStrategy(IStrategy):
+        INTERFACE_VERSION = 3
+        
+        minimal_roi = {
+            "0": 0.05
+        }
+        
+        stoploss = -0.10
+        timeframe = '5m'
+        
+        def populate_indicators(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
+            dataframe['rsi'] = ta.RSI(dataframe, timeperiod=14)
+            
+            # Bollinger Bands
+            bollinger = ta.BBANDS(dataframe, timeperiod=20, nbdevup=2.0, nbdevdn=2.0)
+            dataframe['bb_lowerband'] = bollinger['lowerband']
+            dataframe['bb_middleband'] = bollinger['middleband']
+            dataframe['bb_upperband'] = bollinger['upperband']
+            
+            return dataframe
+        
+        def populate_entry_trend(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
+            dataframe.loc[
+                (
+                    (dataframe['rsi'] < 30) &
+                    (dataframe['close'] < dataframe['bb_lowerband'])
+                ),
+                'enter_long'] = 1
+            
+            return dataframe
+        
+        def populate_exit_trend(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
+            dataframe.loc[
+                (
+                    (dataframe['rsi'] > 70) |
+                    (dataframe['close'] > dataframe['bb_upperband'])
+                ),
+                'exit_long'] = 1
+            
+            return dataframe

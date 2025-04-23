@@ -1,0 +1,25 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: freqtrade-ingress-blue
+  namespace: freqtrade-prod-blue
+  annotations:
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/group.name: "freqtrade-prod"
+    alb.ingress.kubernetes.io/healthcheck-path: /api/v1/ping
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}]'
+    alb.ingress.kubernetes.io/subnets: subnet-0eaca6c56fbaba5c8,subnet-0c0c52182ed368953,subnet-05ee77eb821bfd8e7
+spec:
+  ingressClassName: alb
+  rules:
+  - host: blue.freqtrade-prod.abc-trading-prod.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: freqtrade
+            port:
+              number: 8080

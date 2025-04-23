@@ -1,0 +1,30 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: freqtrade
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: freqtrade
+  template:
+    metadata:
+      labels:
+        app: freqtrade
+    spec:
+      containers:
+      - name: freqtrade
+        image: 339712995243.dkr.ecr.us-east-1.amazonaws.com/freqtrade:latest
+        ports:
+        - containerPort: 8080
+        volumeMounts:
+        - name: config-volume
+          mountPath: /freqtrade/user_data/config.json
+          subPath: config.json
+        - name: config-volume
+          mountPath: /freqtrade/user_data/strategies/SimpleStrategy.py
+          subPath: strategy.py
+      volumes:
+      - name: config-volume
+        configMap:
+          name: freqtrade-config

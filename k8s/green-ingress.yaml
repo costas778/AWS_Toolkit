@@ -1,0 +1,37 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  annotations:
+    alb.ingress.kubernetes.io/group.name: freqtrade-prod
+    alb.ingress.kubernetes.io/healthcheck-path: /api/v1/ping
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}]'
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/subnets: subnet-0eaca6c56fbaba5c8,subnet-0c0c52182ed368953,subnet-05ee77eb821bfd8e7
+    alb.ingress.kubernetes.io/target-type: ip
+    kubectl.kubernetes.io/last-applied-configuration: |
+      {"apiVersion":"networking.k8s.io/v1","kind":"Ingress","metadata":{"annotations":{"alb.ingress.kubernetes.io/group.name":"freqtrade-prod","alb.ingress.kubernetes.io/healthcheck-path":"/api/v1/ping","alb.ingress.kubernetes.io/listen-ports":"[{\"HTTP\": 80}]","alb.ingress.kubernetes.io/scheme":"internet-facing","alb.ingress.kubernetes.io/subnets":"subnet-0eaca6c56fbaba5c8,subnet-0c0c52182ed368953,subnet-05ee77eb821bfd8e7","alb.ingress.kubernetes.io/target-type":"ip"},"name":"freqtrade-ingress-green","namespace":"freqtrade-prod-green"},"spec":{"ingressClassName":"alb","rules":[{"host":"green.freqtrade-prod.abc-trading-prod.com","http":{"paths":[{"backend":{"service":{"name":"freqtrade","port":{"number":8080}}},"path":"/","pathType":"Prefix"}]}}]}}
+  creationTimestamp: "2025-03-17T13:10:50Z"
+  finalizers:
+  - group.ingress.k8s.aws/freqtrade-prod
+  generation: 1
+  name: freqtrade-ingress-green
+  namespace: freqtrade-prod-green
+  resourceVersion: "40412"
+  uid: ceae161d-9399-4af1-adae-da3e1c03359d
+spec:
+  ingressClassName: alb
+  rules:
+  - host: green.freqtrade-prod.abc-trading-prod.com
+    http:
+      paths:
+      - backend:
+          service:
+            name: freqtrade
+            port:
+              number: 8080
+        path: /
+        pathType: Prefix
+status:
+  loadBalancer:
+    ingress:
+    - hostname: k8s-freqtradeprod-42931b6ddf-1844602710.us-east-1.elb.amazonaws.com

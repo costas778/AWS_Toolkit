@@ -1,0 +1,296 @@
+#!/bin/bash
+set -e
+
+# Set variables
+REGION=$(aws configure get region)
+ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+ECR_REPO_NAME="zipline"
+IMAGE_TAG="latest"
+NAMESPACE="zipline"
+APP_NAME="zipline"
+CLUSTER_NAME="zipline-cluster"  # Change this to match your cluster name
+
+# Check if repository exists
+if ! aws ecr describe-repositories --repository-names ${ECR_REPO_NAME} --region ${REGION} &> /dev/null; then
+  echo "ECR repository ${ECR_REPO_NAME} does not exist. Please run setup-zipline-ecr.sh first."
+  exit 1
+fi
+
+# Authenticate Docker to ECR
+echo "Authenticating Docker to ECR..."
+aws ecr get-login-password --region ${REGION} | docker login --username AWS --password-stdin ${ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com
+
+# Create Dockerfile
+echo "Creating Dockerfile..."
+cat > Dockerfile << EOF
+FROM continuumio/miniconda3:latest
+
+# Install system dependencies
+RUN apt-get update -o Acquire::AllowInsecureRepositories=true -o Acquire::AllowDowngradeToInsecureRepositories=true && \
+    apt-get install -y --allow-unauthenticated build-essential git && \
+    rm -rf /var/lib/apt/lists/*
+
+# Set up working directory
+WORKDIR /zipline
+
+# Create conda environment with Zipline
+RUN conda create -n zipline python=3.6 -y
+SHELL ["/bin/bash", "-c"]
+RUN echo "source activate zipline" > ~/.bashrc
+ENV PATH=/opt/conda/envs/zipline/bin:\$PATH
+
+# Install Zipline and dependencies using conda
+RUN conda install -n zipline -c conda-forge zipline -y
+RUN conda install -n zipline -c conda-forge jupyter pandas-datareader matplotlib flask -y
+
+# Create data directory
+RUN mkdir -p /zipline/data
+
+# Set environment variables
+ENV ZIPLINE_ROOT=/zipline/data
+
+# Create a simple API server
+RUN echo 'from flask import Flask, jsonify\n\
+import zipline\n\
+\n\
+app = Flask(__name__)\n\
+\n\
+@app.route("/health")\n\
+def health():\n\
+    return jsonify({"status": "healthy"})\n\
+\n\
+@app.route("/")\n\
+def home():\n\
+    return jsonify({\n\
+        "message": "Zipline API Server",\n\
+        "version": zipline.__version__\n\
+    })\n\
+\n\
+if __name__ == "__main__":\n\
+    app.run(host="0.0.0.0", port=8080)' > /zipline/api_server.py
+
+# Expose port for API
+EXPOSE 8080
+
+# Command to run API server
+CMD ["conda", "run", "-n", "zipline", "python", "/zipline/api_server.py"]
+EOF
+
+# Build Docker image
+echo "Building Docker image..."
+docker build -t ${ECR_REPO_NAME}:${IMAGE_TAG} .
+
+# Tag image for ECR
+echo "Tagging image for ECR..."
+docker tag ${ECR_REPO_NAME}:${IMAGE_TAG} ${ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com/${ECR_REPO_NAME}:${IMAGE_TAG}
+
+# Push image to ECR
+echo "Pushing image to ECR..."
+docker push ${ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com/${ECR_REPO_NAME}:${IMAGE_TAG}
+
+echo "Image successfully built and pushed to ${ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com/${ECR_REPO_NAME}:${IMAGE_TAG}"
+
+# Create Kubernetes YAML files
+echo "Creating Kubernetes YAML files..."
+
+# Create namespace YAML
+cat > zipline-namespace.yaml << EOF
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ${NAMESPACE}
+EOF
+
+# Create ConfigMap YAML
+cat > zipline-configmap.yaml << EOF
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ${APP_NAME}-config
+  namespace: ${NAMESPACE}
+data:
+  config.json: |
+    {
+      "data_directory": "/zipline/data",
+      "log_level": "info",
+      "api": {
+        "enabled": true,
+        "host": "0.0.0.0",
+        "port": 8080
+      },
+      "database": {
+        "type": "sqlite",
+        "path": "/zipline/data/zipline.db"
+      }
+    }
+EOF
+
+# Create PersistentVolumeClaim for data persistence
+cat > zipline-pvc.yaml << EOF
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ${APP_NAME}-data
+  namespace: ${NAMESPACE}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+  storageClassName: gp2
+EOF
+
+# Create Deployment YAML
+cat > zipline-deployment.yaml << EOF
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ${APP_NAME}
+  namespace: ${NAMESPACE}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ${APP_NAME}
+  template:
+    metadata:
+      labels:
+        app: ${APP_NAME}
+    spec:
+      containers:
+      - name: ${APP_NAME}
+        image: ${ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com/${ECR_REPO_NAME}:${IMAGE_TAG}
+        ports:
+        - containerPort: 8080
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "250m"
+          limits:
+            memory: "1Gi"
+            cpu: "500m"
+        volumeMounts:
+        - name: config-volume
+          mountPath: /zipline/config.json
+          subPath: config.json
+        - name: data-volume
+          mountPath: /zipline/data
+        env:
+        - name: ZIPLINE_ROOT
+          value: "/zipline/data"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 5
+      volumes:
+      - name: config-volume
+        configMap:
+          name: ${APP_NAME}-config
+      - name: data-volume
+        persistentVolumeClaim:
+          claimName: ${APP_NAME}-data
+      # Pod topology spread constraints to ensure high availability
+      topologySpreadConstraints:
+      - maxSkew: 1
+        topologyKey: kubernetes.io/hostname
+        whenUnsatisfiable: ScheduleAnyway
+        labelSelector:
+          matchLabels:
+            app: ${APP_NAME}
+EOF
+
+# Create Service YAML
+cat > zipline-service.yaml << EOF
+apiVersion: v1
+kind: Service
+metadata:
+  name: ${APP_NAME}
+  namespace: ${NAMESPACE}
+spec:
+  ports:
+  - port: 80
+    targetPort: 8080
+    protocol: TCP
+  selector:
+    app: ${APP_NAME}
+EOF
+
+# Create Ingress YAML
+cat > zipline-ingress.yaml << EOF
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ${APP_NAME}
+  namespace: ${NAMESPACE}
+  annotations:
+    kubernetes.io/ingress.class: alb
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/healthcheck-path: /health
+    alb.ingress.kubernetes.io/healthcheck-protocol: HTTP
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}]'
+spec:
+  rules:
+  - http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: ${APP_NAME}
+            port:
+              number: 80
+EOF
+
+# Create a Pod Disruption Budget to ensure high availability
+cat > zipline-pdb.yaml << EOF
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: ${APP_NAME}-pdb
+  namespace: ${NAMESPACE}
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: ${APP_NAME}
+EOF
+
+# Create a deployment script
+cat > deploy-zipline.sh << EOF
+#!/bin/bash
+set -e
+
+# Apply Kubernetes manifests
+kubectl apply -f zipline-namespace.yaml
+kubectl apply -f zipline-configmap.yaml
+kubectl apply -f zipline-pvc.yaml
+kubectl apply -f zipline-deployment.yaml
+kubectl apply -f zipline-service.yaml
+kubectl apply -f zipline-ingress.yaml
+kubectl apply -f zipline-pdb.yaml
+
+# Wait for deployment to be ready
+echo "Waiting for deployment to be ready..."
+kubectl -n ${NAMESPACE} rollout status deployment/${APP_NAME}
+
+# Get the ALB URL
+echo "Getting ALB URL..."
+sleep 30  # Give some time for the ALB to be provisioned
+ALB_URL=\$(kubectl -n ${NAMESPACE} get ingress ${APP_NAME} -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+echo "Zipline is accessible at: http://\${ALB_URL}"
+EOF
+
+chmod +x deploy-zipline.sh
+
+echo "Kubernetes YAML files created successfully"
+echo "To deploy Zipline to your cluster, run: ./deploy-zipline.sh"

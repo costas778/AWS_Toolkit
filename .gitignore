@@ -52,3 +52,4 @@ dist/
 # Kubernetes backups
 k8s/backups/
 old/
+set-env.sh

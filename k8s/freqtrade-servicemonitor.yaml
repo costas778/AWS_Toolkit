@@ -1,0 +1,37 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: freqtrade-blue
+  namespace: monitoring
+  labels:
+    release: prometheus
+spec:
+  namespaceSelector:
+    matchNames:
+      - freqtrade-prod-blue
+  selector:
+    matchLabels:
+      app: freqtrade
+  endpoints:
+  - port: http
+    path: /metrics
+    interval: 30s
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: freqtrade-green
+  namespace: monitoring
+  labels:
+    release: prometheus
+spec:
+  namespaceSelector:
+    matchNames:
+      - freqtrade-prod-green
+  selector:
+    matchLabels:
+      app: freqtrade
+  endpoints:
+  - port: http
+    path: /metrics
+    interval: 30s
